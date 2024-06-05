@@ -1,3 +1,26 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    runs-on: self-hosted
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: true  # 使用子模組
+
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v1
+
+    - name: Build and test
+      run: |
+        mkdir -p build && cd build
+        cmake ..
+        make
+        ./assignment-autotest/assignment-autotest
 name: assignment-test
 on: 
     push:
