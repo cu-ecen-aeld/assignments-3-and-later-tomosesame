@@ -1,80 +1,113 @@
 #!/bin/bash
-# Script outline to install and build kernel.
-# Author: Siddhant Jajoo.
+# Script to build a barebones kernel and rootfs using ARM cross-compile toolchain
+# Author: Siddhant Jajoo
 
 set -e
 set -u
 
+# Default output directory
 OUTDIR=/tmp/aeld
-KERNEL_REPO=git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
-KERNEL_VERSION=v5.1.10
-BUSYBOX_VERSION=1_33_1
+
+# Default values for kernel and busybox versions
+KERNEL_VERSION="v5.1.10"
+BUSYBOX_VERSION="1_33_1"
+
+# Finder app directory
 FINDER_APP_DIR=$(realpath $(dirname $0))
+
+# Architecture and cross-compile prefix
 ARCH=arm64
-CROSS_COMPILE=aarch64-none-linux-gnu-
+CROSS_COMPILE=aarch64-linux-gnu-
 
-if [ $# -lt 1 ]
-then
-	echo "Using default directory ${OUTDIR} for output"
-else
-	OUTDIR=$1
-	echo "Using passed directory ${OUTDIR} for output"
+# Check if output directory is provided as argument
+if [ $# -ge 1 ]; then
+    OUTDIR="$1"
 fi
 
-mkdir -p ${OUTDIR}
+echo "Using output directory: $OUTDIR"
 
-cd "$OUTDIR"
+# Create output directory if it doesn't exist
+mkdir -p "$OUTDIR"
+
+# Clone Linux kernel source if not already present
 if [ ! -d "${OUTDIR}/linux-stable" ]; then
-    #Clone only if the repository does not exist.
-	echo "CLONING GIT LINUX STABLE VERSION ${KERNEL_VERSION} IN ${OUTDIR}"
-	git clone ${KERNEL_REPO} --depth 1 --single-branch --branch ${KERNEL_VERSION}
-fi
-if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
-    cd linux-stable
-    echo "Checking out version ${KERNEL_VERSION}"
-    git checkout ${KERNEL_VERSION}
-
-    # TODO: Add your kernel build steps here
+    echo "Cloning Linux kernel source..."
+    git clone --depth 1 --single-branch --branch "$KERNEL_VERSION" "$KERNEL_REPO" "${OUTDIR}/linux-stable"
 fi
 
-echo "Adding the Image in outdir"
+# Build kernel
+echo "Building Linux kernel..."
+cd "${OUTDIR}/linux-stable"
 
-echo "Creating the staging directory for the root filesystem"
-cd "$OUTDIR"
-if [ -d "${OUTDIR}/rootfs" ]
-then
-	echo "Deleting rootfs directory at ${OUTDIR}/rootfs and starting over"
-    sudo rm  -rf ${OUTDIR}/rootfs
-fi
+# Clean and configure kernel
+make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE mrproper
+make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
 
-# TODO: Create necessary base directories
+# Build kernel
+make -j$(nproc) ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE all
 
-cd "$OUTDIR"
-if [ ! -d "${OUTDIR}/busybox" ]
-then
-git clone git://busybox.net/busybox.git
-    cd busybox
-    git checkout ${BUSYBOX_VERSION}
-    # TODO:  Configure busybox
+# Copy kernel image to output directory
+cp "${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image" "${OUTDIR}/Image"
+
+# Create root filesystem staging directory
+echo "Creating root filesystem staging directory..."
+mkdir -p "${OUTDIR}/rootfs"
+
+# Clone or update BusyBox source
+if [ ! -d "${OUTDIR}/busybox" ]; then
+    echo "Cloning BusyBox source..."
+    git clone --depth 1 "git://busybox.net/busybox.git" "${OUTDIR}/busybox"
 else
-    cd busybox
+    echo "Updating existing BusyBox source..."
+    cd "${OUTDIR}/busybox"
+    git fetch origin
+    git reset --hard origin/master
 fi
 
-# TODO: Make and install busybox
+cd "${OUTDIR}/busybox"
 
-echo "Library dependencies"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
+# Configure BusyBox
+echo "Configuring BusyBox..."
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" defconfig
 
-# TODO: Add library dependencies to rootfs
+# Build BusyBox
+echo "Building BusyBox..."
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}"
 
-# TODO: Make device nodes
+# Install BusyBox
+echo "Installing BusyBox to rootfs..."
+make ARCH="${ARCH}" CROSS_COMPILE="${CROSS_COMPILE}" CONFIG_PREFIX="${OUTDIR}/rootfs" install
 
-# TODO: Clean and build the writer utility
+# Create necessary base directories
+echo "Creating base directories..."
+cd "${OUTDIR}/rootfs"
+mkdir -p proc sys dev etc home
 
-# TODO: Copy the finder related scripts and executables to the /home directory
-# on the target rootfs
+# Create device nodes
+echo "Creating device nodes..."
+sudo mknod -m 666 dev/null c 1 3
+sudo mknod -m 600 dev/console c 5 1
 
-# TODO: Chown the root directory
+# Clean and build the writer utility
+echo "Building writer utility..."
+cd "${FINDER_APP_DIR}"
+make clean
+make CROSS_COMPILE=${CROSS_COMPILE}
 
-# TODO: Create initramfs.cpio.gz
+# Copy the finder related scripts and executables to the /home directory on the target rootfs
+echo "Copying finder scripts and executables..."
+cp writer "${OUTDIR}/rootfs/home/"
+cp finder.sh finder-test.sh "${OUTDIR}/rootfs/home/"
+mkdir -p "${OUTDIR}/rootfs/home/conf"
+cp conf/username.txt conf/assignment.txt "${OUTDIR}/rootfs/home/conf/"
+
+# Chown root directory
+echo "Changing owner of root directory..."
+sudo chown -R root:root "${OUTDIR}/rootfs"
+
+# Create initramfs
+echo "Creating initramfs..."
+cd "${OUTDIR}/rootfs"
+find . | cpio -H newc -o | gzip > "${OUTDIR}/initramfs.cpio.gz"
+
+echo "Done."
